@@ -28,10 +28,12 @@ class TripGraph
 
     TripStop get_tripstop(int32_t id);
 
-    TripPath find_path(int secs, std::string service_period, bool walkonly,
-                       double src_lat, double src_lng, 
-                       double dest_lat, double dest_lng);
-
+#ifdef SWIG
+    %newobject find_path;
+#endif
+    TripPath * find_path(int secs, std::string service_period, bool walkonly,
+                         double src_lat, double src_lng, 
+                         double dest_lat, double dest_lng);
     // various internal types
     struct PathCompare
     {
@@ -46,7 +48,8 @@ class TripGraph
     typedef boost::unordered_map<int32_t, boost::unordered_map<int, boost::shared_ptr<TripPath> > > VisitedRouteMap;
     typedef boost::unordered_map<int32_t, boost::unordered_map<int32_t, boost::shared_ptr<TripPath> > > VisitedWalkMap;
     typedef std::priority_queue<boost::shared_ptr<TripPath>, std::vector<boost::shared_ptr<TripPath> >, PathCompare> PathQueue;
-    typedef boost::unordered_map<int32_t, boost::shared_ptr<TripStop> > TripStopDict;
+    
+    typedef std::vector<boost::shared_ptr<TripStop> > TripStopList;
 
   private:
     // internal copy of get_tripstop: returns a pointer, not a copy, so
@@ -61,7 +64,7 @@ class TripGraph
                      VisitedWalkMap &visited_walks, 
                      PathQueue &uncompleted_paths, PathQueue &completed_paths);
     
-    TripStopDict tripstops;
+    TripStopList tripstops;
 };
 
 #endif // __TRIPGRAPH

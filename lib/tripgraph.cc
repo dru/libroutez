@@ -69,11 +69,13 @@ void TripGraph::load(string fname)
         return;
     }
         
+    tripstops.reserve(num_tripstops);
     uint32_t i = 0;
     while (i < num_tripstops)
     {
         shared_ptr<TripStop> s(new TripStop(fp));
-        tripstops.insert(pair<int32_t,shared_ptr<TripStop> >(s->id, s));
+        assert(tripstops.size() == s->id);
+        tripstops.push_back(s);
         i++;
     }
 
@@ -94,10 +96,10 @@ void TripGraph::save(string fname)
     // write triphops
     uint32_t num_tripstops = tripstops.size();
     assert(fwrite(&num_tripstops, sizeof(uint32_t), 1, fp) == 1);
-    for (TripStopDict::iterator i = tripstops.begin();
+    for (TripStopList::iterator i = tripstops.begin();
          i != tripstops.end(); i++)
     {
-        i->second->write(fp);
+        (*i)->write(fp);
     }
 
     fclose(fp);
@@ -116,8 +118,10 @@ void TripGraph::add_triphop(int32_t start_time, int32_t end_time,
 
 void TripGraph::add_tripstop(int32_t id, string type, float lat, float lng)
 {
-    shared_ptr<TripStop> s(new TripStop(id, type, lat, lng));
-    tripstops.insert(pair<int32_t,shared_ptr<TripStop> >(id, s));
+    // id must equal size of tripstops
+    assert(id == tripstops.size());
+
+    tripstops.push_back(shared_ptr<TripStop>(new TripStop(id, type, lat, lng)));
 }
 
 
@@ -174,14 +178,14 @@ void TripGraph::link_osm_gtfs()
 
     int tripstop_count = 0;
     int tripstop_total = tripstops.size();
-    for (TripStopDict::iterator i = tripstops.begin(); 
+    for (TripStopList::iterator i = tripstops.begin(); 
          i != tripstops.end(); i++)
     {
         tripstop_count++;
         // For each GTFS stop...
-        if (strcmp(i->second->type, "gtfs") == 0)
+        if (strcmp((*i)->type, "gtfs") == 0)
         {
-            Point gtfs_pt(i->second->lat, i->second->lng);
+            Point gtfs_pt((*i)->lat, (*i)->lng);
             
             pair<int32_t, int32_t> nearest_walkhop(-1, -1);
             double min_dist;
@@ -195,13 +199,13 @@ void TripGraph::link_osm_gtfs()
             // Another idea is to put a bounding box around each tripstop and
             // its associated walkhops, saving us from having to examine each
             // walkhop of some faraway triphop.
-            for (TripStopDict::iterator j = tripstops.begin(); 
+            for (TripStopList::iterator j = tripstops.begin(); 
                  j != tripstops.end(); j++)
             {
-                for (TripStop::WalkHopList::iterator k = j->second->wlist.begin(); 
-                     k != j->second->wlist.end(); k++)
+                for (TripStop::WalkHopList::iterator k = (*j)->wlist.begin(); 
+                     k != (*j)->wlist.end(); k++)
                 {
-                    Point trip_pt(j->second->lat, j->second->lng);
+                    Point trip_pt((*j)->lat, (*j)->lng);
 
                     shared_ptr<TripStop> dest_stop = _get_tripstop(k->dest_id);
                     Point walk_pt(dest_stop->lat, dest_stop->lng);
@@ -214,16 +218,16 @@ void TripGraph::link_osm_gtfs()
                     if ((nearest_walkhop.first == (-1) && 
                          nearest_walkhop.second == (-1)) || dist < min_dist)
                     {
-                        nearest_walkhop = pair<int32_t,int32_t>();
+                        nearest_walkhop = pair<int32_t,int32_t>(-1, -1);
                         // If the GTFS stop is on one of the OSM nodes, use
                         // that node.  Otherwise remember both nodes.
                         if (trip_pt == p)
-                            nearest_walkhop.first = j->first;
+                            nearest_walkhop.first = (*j)->id;
                         else if (walk_pt == p)
                             nearest_walkhop.first = k->dest_id;
                         else
                         {
-                            nearest_walkhop.first = j->first;
+                            nearest_walkhop.first = (*j)->id;
                             nearest_walkhop.second = k->dest_id;
                         }
 
@@ -232,10 +236,10 @@ void TripGraph::link_osm_gtfs()
                 }
             }
             
-            new_walkhops[i->first] = nearest_walkhop;
+            new_walkhops[(*i)->id] = nearest_walkhop;
             printf("%02.2f%% done: Linking %d -> %d, %d\n", 
                     ((float)tripstop_count * 100.0f) / ((float)tripstop_total),
-                    i->first, 
+                    (*i)->id, 
                     nearest_walkhop.first, 
                     nearest_walkhop.second);
         }
@@ -268,14 +272,13 @@ shared_ptr<TripStop> TripGraph::get_nearest_stop(double lat, double lng)
     
     shared_ptr<TripStop> closest_stop;
     double min_dist = 0.0f;
-    for (TripStopDict::iterator i = tripstops.begin(); 
+    for (TripStopList::iterator i = tripstops.begin(); 
          i != tripstops.end(); i++)
     {
-        shared_ptr<TripStop> s = i->second;
-        double dist = pow((s->lat - lat), 2) + pow((s->lng - lng), 2);
+        double dist = pow(((*i)->lat - lat), 2) + pow(((*i)->lng - lng), 2);
         if (!closest_stop || dist < min_dist)
         {
-            closest_stop = s;
+            closest_stop = (*i);
             min_dist = dist;
         }
     }
@@ -291,7 +294,7 @@ TripStop TripGraph::get_tripstop(int32_t id)
 }
 
 
-TripPath TripGraph::find_path(int secs, string service_period, bool walkonly,
+TripPath * TripGraph::find_path(int secs, string service_period, bool walkonly,
                               double src_lat, double src_lng, 
                               double dest_lat, double dest_lng)
 {
@@ -303,7 +306,11 @@ TripPath TripGraph::find_path(int secs, string service_period, bool walkonly,
 
     shared_ptr<TripStop> start_node = get_nearest_stop(src_lat, src_lng);
     shared_ptr<TripStop> end_node = get_nearest_stop(dest_lat, dest_lng);
-    DEBUGPATH("Start: %s End: %s\n", start_node->id, end_node->id);
+    DEBUGPATH("Find path. Secs: %s service period: %s walkonly: %d "
+              "src lat: %f src lng: %f dest_lat: %f dest_lng: %f\n",
+              secs, service_period.c_str(), walkonly, src_lat, src_lng,
+              dest_lat, dest_lng);
+    DEBUGPATH("- Start: %d End: %d\n", start_node->id, end_node->id);
 
     // Consider the distance required to reach the start node from the 
     // beginning, and add that to our start time.
@@ -311,61 +318,56 @@ TripPath TripGraph::find_path(int secs, string service_period, bool walkonly,
                                       start_node->lat, start_node->lng);
     secs += (int)(dist_from_start / est_walk_speed);
     
-    DEBUGPATH("Start time - %d\n", secs);
+    DEBUGPATH("- Start time - %d\n", secs);
     shared_ptr<TripPath> start_path(new TripPath(secs, est_walk_speed, 
                                                  end_node, start_node));
     if (start_node == end_node)
-        return TripPath(*start_path);
+        return new TripPath(*start_path);
 
     uncompleted_paths.push(start_path);
 
-    TripPath best_completed_path;
+    TripPath *best_completed_path;
 
-    for (int i=0; i<3; i++)
+    int num_paths_considered = 0;
+
+    while (uncompleted_paths.size() > 0)
     {
-        int num_paths_considered = 0;
-
-        while (uncompleted_paths.size() > 0)
+        DEBUGPATH("Continuing\n");
+        shared_ptr<TripPath> path = uncompleted_paths.top();
+        uncompleted_paths.pop();
+        extend_path(path, service_period, walkonly, end_node->id, 
+                    num_paths_considered, visited_routes, visited_walks, 
+                    uncompleted_paths, completed_paths);
+        
+        // If we've still got open paths, but their weight exceeds that
+        // of the weight of a completed path, break.
+        if (uncompleted_paths.size() > 0 && completed_paths.size() > 0 &&
+            uncompleted_paths.top()->heuristic_weight > 
+            completed_paths.top()->heuristic_weight)
         {
-            shared_ptr<TripPath> path = uncompleted_paths.top();
-            uncompleted_paths.pop();
-            extend_path(path, service_period, walkonly, end_node->id, 
-                        num_paths_considered, visited_routes, visited_walks, 
-                        uncompleted_paths, completed_paths);
-
-            // If we've still got open paths, but their weight exceeds that
-            // of the weight of a completed path, break.
-            if (uncompleted_paths.size() > 0 && completed_paths.size() > 0 &&
-                uncompleted_paths.top()->heuristic_weight > 
-                completed_paths.top()->heuristic_weight)
-            {
-                DEBUGPATH("Breaking with %d uncompleted paths (paths "
-                          "considered: %d).\n", uncompleted_paths.size(), 
-                          num_paths_considered);
-                return TripPath(*(completed_paths.top()));
-            }
-
-            //if len(completed_paths) > 0 and len(uncompleted_paths) > 0:
-            //  print "Weight of best completed path: %s, uncompleted: %s" % \
-            //      (completed_paths[0].heuristic_weight, uncompleted_paths[0].heuristic_weight)
+            DEBUGPATH("Breaking with %d uncompleted paths (paths "
+                      "considered: %d).\n", uncompleted_paths.size(), 
+                      num_paths_considered);
+            return new TripPath(*(completed_paths.top()));
         }
-
-        if (completed_paths.size())
-            best_completed_path = TripPath(*(completed_paths.top()));
+        
+        //if len(completed_paths) > 0 and len(uncompleted_paths) > 0:
+        //  print "Weight of best completed path: %s, uncompleted: %s" % \
+        //      (completed_paths[0].heuristic_weight, uncompleted_paths[0].heuristic_weight)
     }
+    
+    if (completed_paths.size())
+        return new TripPath(*(completed_paths.top()));
 
-    return best_completed_path;
-
-    return TripPath();
+    return NULL;
 }
 
 
 shared_ptr<TripStop> TripGraph::_get_tripstop(int32_t id)
 {
-    TripStopDict::iterator ts = tripstops.find(id);
-    assert(ts != tripstops.end());
+    assert(id < tripstops.size());
 
-    return ts->second;
+    return tripstops[id];
 }
 
 
@@ -396,7 +398,7 @@ void TripGraph::extend_path(shared_ptr<TripPath> &path,
     }
 #endif
     
-    DEBUGPATH("Extending path at vertex %s (on %d) @ %f (walktime: %f, "
+    DEBUGPATH("Extending path at vertex %d (on %d) @ %f (walktime: %f, "
               "routetime:%f)\n", src_id, last_route_id, path->time, 
               path->walking_time, path->route_time);
     shared_ptr<TripStop> src_stop = _get_tripstop(src_id);
@@ -432,14 +434,14 @@ void TripGraph::extend_path(shared_ptr<TripPath> &path,
             shared_ptr<TripPath> path2 = path->add_action(
                 action, outgoing_route_ids, ds);
 
-            DEBUGPATH("- Considering walkpath to %s\n", dest_id);
+            DEBUGPATH("- Considering walkpath to %d\n", dest_id);
 
             if (v1 == vsrc.end() || 
                 v1->second->heuristic_weight > path2->heuristic_weight ||
                 ((v1->second->heuristic_weight - path2->heuristic_weight) < 1.0f &&
                  v1->second->walking_time > path2->walking_time))
             {
-                DEBUGPATH("-- Adding walkpath to %s\n", dest_id);
+                DEBUGPATH("-- Adding walkpath to %d\n", dest_id);
                 if (dest_id == goal_id)
                     completed_paths.push(path2);
                 else
